@@ -25,7 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 tui = ["textual>=8.2"]
-fb  = ["pygame>=2.5"]
+fb  = ["pygame-ce>=2.5"]
 test = ["pytest>=8", "pytest-asyncio>=0.23", "nicegui>=3.10"]
 
 [project.scripts]
