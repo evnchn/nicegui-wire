@@ -33,3 +33,7 @@ ngwire = "nicegui_wire.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["nicegui_wire*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
