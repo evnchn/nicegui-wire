@@ -1,5 +1,8 @@
 # nicegui-wire
 
+> [!CAUTION]
+> **Vibe-coded, unreviewed.** This repo was built end-to-end in one autonomous overnight stretch by Claude Code (April 2026) and shipped here without a human code review. The code works against the bundled dev server (`examples/hello.py`) — handshake, tree reconstruction, round-trip interactivity all pass — but it has **never been pointed at `nicegui.io` itself**, and we wouldn't dare; that page is a monster for a prototype this thin. Use this for protocol exploration on small NiceGUI apps you control. Expect rough edges, leaky abstractions, and surprises. *Talk is cheap, show me the code.*
+
 **A network-level NiceGUI client.** Point it at a running NiceGUI site, and it speaks the Socket.IO wire + parses the HTML bootstrap to reconstruct the live element tree in-memory — without ever importing NiceGUI.
 
 Same element stream, two back-ends:
@@ -7,7 +10,7 @@ Same element stream, two back-ends:
 1. **`ngwire tui <url>`** — renders the site as a Textual TUI over SSH or in your terminal.
 2. **`ngwire fb <url>`** — renders into a 320×240 framebuffer (pygame-ce simulator), sized and primitive-shaped for an ESP32-S3 + ILI9341 panel.
 
-Unlike its sister project [`nicegui-tui`](https://github.com/evnchn/nicegui-tui), `nicegui-wire` never touches NiceGUI's Python objects. It talks to NiceGUI the way a browser does, so it works against any NiceGUI 3.x site you can reach over HTTP — your own, `nicegui.io` itself, whatever.
+Unlike its sister project [`nicegui-tui`](https://github.com/evnchn/nicegui-tui), `nicegui-wire` never touches NiceGUI's Python objects. It talks to NiceGUI the way a browser does, so in principle any NiceGUI 3.x site you can reach over HTTP is a candidate — though so far we've only proven it against small dev apps (see CAUTION above).
 
 ## Status
 
@@ -20,7 +23,7 @@ What works:
 - Send events back (`click`, `update:value`, `update:modelValue`) — full round-trip interactivity.
 - Textual TUI renderer with ~10 widget types.
 - 320×240 framebuffer renderer (pygame-ce) with keyboard + mouse input.
-- Proven against live `https://nicegui.io/` (382 elements parsed, handshake clean).
+- Proven against the bundled `examples/hello.py` dev server (counter, label, input round-trip clean). **Not tested against `nicegui.io` or other production sites.**
 
 What's limited:
 - Widget palette is a subset (same scope as nicegui-tui v0.0.1). Unknown tags render as `[unsupported: <tag>]`.
@@ -53,16 +56,16 @@ ngwire tui   http://127.0.0.1:8181/             # Textual TUI
 ngwire fb    http://127.0.0.1:8181/ --scale 2   # 320x240 framebuffer sim
 ```
 
-### 2. Against a live NiceGUI site
+### 2. Against your own NiceGUI app
 
 ```bash
-ngwire sniff https://nicegui.io/ -o /tmp/nicegui-io.jsonl
+ngwire sniff http://localhost:8080/ -o /tmp/sniff.jsonl
 ```
 
-For the renderers, the live-site case works too (render-only — event callbacks may be no-ops if the server's handler graph differs):
+For the renderers, point them at any small NiceGUI app you control. **`nicegui.io` itself has not been tested and almost certainly does interesting things this prototype hasn't seen yet** — try at your own risk:
 
 ```bash
-ngwire tui https://nicegui.io/documentation
+ngwire tui http://localhost:8080/
 ```
 
 ## Architecture

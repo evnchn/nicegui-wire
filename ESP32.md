@@ -25,7 +25,7 @@ The author does not yet own the hardware. This is the intended acquisition list,
 
 **Why these choices:**
 
-- **ESP32-S3, not C3/C6**: C3 is single-core RISC-V, no PSRAM on most dev kits. The S3 has PSRAM (needed to buffer the reconstructed element tree, especially for a 382-element page like `nicegui.io`), a second core for WiFi, and usable I/O pin count for SPI + buttons.
+- **ESP32-S3, not C3/C6**: C3 is single-core RISC-V, no PSRAM on most dev kits. The S3 has PSRAM (needed to buffer the reconstructed element tree once you go beyond toy apps; a real-world NiceGUI page like the upstream documentation is comfortably in the hundreds of elements), a second core for WiFi, and usable I/O pin count for SPI + buttons.
 - **N16R8 variant**: 8 MB PSRAM + 16 MB flash. The 2 MB flash / 2 MB PSRAM variants can do it but are tight.
 - **ILI9341 SPI**: cheapest panel with a reliable driver on all four of Arduino-ESP32, ESP-IDF, MicroPython, and Rust (`embedded-graphics`). 320×240 is exactly what the simulator renders natively.
 - **EC11 encoder** for focus: matches the Tab / Shift-Tab keyboard semantics of the sim directly. One click per detent.
@@ -43,7 +43,7 @@ Two realistic paths, in order of prototyping speed:
 - `uasyncio` gives you the exact event-loop shape the sim already uses.
 - `umqtt`-style socket.io support is not great out of the box; you'll need to hand-write Engine.IO v4 polling / upgrade. See `nicegui_wire/sio_client.py` for the message schema you need to match.
 - LCD: [`micropython-ili9341`](https://github.com/rdagger/micropython-ili9341) or [`lvgl_micropython`](https://github.com/lvgl-micropython/lvgl_micropython).
-- Upside: iterate in Python. Downside: limited RAM on 4 MB PSRAM variants; JSON parsing of 382-element bootstrap will be tight.
+- Upside: iterate in Python. Downside: limited RAM on 4 MB PSRAM variants; JSON parsing of a hundreds-of-elements bootstrap will be tight.
 
 ### Option B: Arduino/ESP-IDF (C/C++)
 
@@ -62,9 +62,10 @@ On `hello.py` (14 elements):
 
 The 16bpp LCD format is what ILI9341 wants natively. The S3 can keep the entire framebuffer in internal SRAM and still have headroom; no need to bounce through PSRAM.
 
-On `nicegui.io` (382 elements):
-- Element tree: ~180 KB of JSON
-- That lives fine in PSRAM. Parsing it top-down streaming avoids a 2× transient.
+Extrapolation for a documentation-sized page (~hundreds of elements, untested):
+- Element tree: order of ~180 KB of JSON.
+- That should live fine in PSRAM. Parsing it top-down streaming avoids a 2× transient.
+- These numbers are paper estimates from the protocol shape, **not** measured runs.
 
 ## Protocol translation checklist
 
