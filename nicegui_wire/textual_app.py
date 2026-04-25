@@ -87,6 +87,13 @@ class _Placeholder(Static):
     """
 
 
+_INVISIBLE_TAGS = {
+    "nicegui-timer",
+    "nicegui-keyboard",
+    "nicegui-page-title",
+}
+
+
 def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | None:
     """Return a Textual widget for the given wire node.
 
@@ -98,6 +105,9 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
     Returns ``None`` if this node should be completely skipped.
     """
     tag = node.tag
+
+    if tag in _INVISIBLE_TAGS:
+        return None
 
     if tag in ("q-layout", "q-page-container", "q-page"):
         w = Vertical(*children) if children else Vertical()
@@ -262,12 +272,88 @@ class WireTuiApp(App):
         # Socket.IO events fire in the same asyncio loop Textual runs on, so
         # we post back via call_later (not call_from_thread).
         if event == "update" and isinstance(data, dict):
-            self.call_later(self._rebuild)
+            # Patch in place where possible — a wholesale rebuild on every
+            # update destroys focus, which means the user loses keystrokes
+            # the moment a server-side binding fires (the typical case).
+            self.call_later(lambda d=data: self._patch_or_rebuild(d))
         elif event == "notify" and isinstance(data, dict):
             message = str(data.get("message", ""))
             ntype = str(data.get("type", "info"))
             severity = {"negative": "error", "warning": "warning", "positive": "information"}.get(ntype, "information")
             self.call_later(lambda: self.notify(message, severity=severity, title=ntype))
+
+    def _patch_or_rebuild(self, data: dict) -> None:
+        """Apply a server ``update`` to existing widgets without remounting.
+
+        Falls back to a full rebuild when the change is structural (a child
+        list grew/shrank, a new element id appeared, an element was deleted).
+        """
+        from textual.widgets import Markdown as _Markdown
+
+        for k, v in data.items():
+            if k == "_id":
+                continue
+            try:
+                eid = int(k)
+            except (TypeError, ValueError):
+                continue
+            if v is None:
+                self._rebuild()
+                return
+            widget = self._widgets.get(eid)
+            if widget is None:
+                self._rebuild()
+                return
+            new_kids = list(v.get("children") or [])
+            cur_kids = [getattr(c, "ng_id", None) for c in widget.children]
+            cur_kids = [k for k in cur_kids if k is not None]
+            if new_kids != cur_kids:
+                self._rebuild()
+                return
+
+        # All in-place patches. Dispatch by the wire tag (exact match) to
+        # avoid Textual's class hierarchy gotchas — Checkbox/Button both
+        # subclass Static, so isinstance() checks are unsafe here.
+        for k, v in data.items():
+            if k == "_id":
+                continue
+            eid = int(k)
+            widget = self._widgets.get(eid)
+            if widget is None:
+                continue
+            tag = v.get("tag", "")
+            new_text = v.get("text")
+            new_props = v.get("props") or {}
+            try:
+                if tag == "div" and isinstance(widget, Static):
+                    if new_text is not None:
+                        widget.update(str(new_text))
+                elif tag in ("q-markdown", "markdown-element", "nicegui-markdown"):
+                    content = str(new_props.get("content", "") or new_text or "")
+                    if isinstance(widget, _Markdown):
+                        widget.update(content)
+                elif tag == "q-btn" and isinstance(widget, Button):
+                    label = new_props.get("label") or new_text or ""
+                    if label:
+                        widget.label = str(label)
+                elif tag == "nicegui-input" and isinstance(widget, Input):
+                    # Don't overwrite the focused input — that erases what
+                    # the user is typing. A server-initiated value change
+                    # (e.g. ui.timer resetting it) only applies when idle.
+                    if not widget.has_focus:
+                        new_val = str(new_props.get("value", "") or "")
+                        if widget.value != new_val:
+                            widget.value = new_val
+                elif tag == "q-checkbox" and isinstance(widget, Checkbox):
+                    new_val = bool(new_props.get("model-value", False))
+                    if widget.value != new_val:
+                        widget.value = new_val
+                elif tag == "q-toggle" and isinstance(widget, Switch):
+                    new_val = bool(new_props.get("model-value", False))
+                    if widget.value != new_val:
+                        widget.value = new_val
+            except Exception as exc:
+                log.debug("patch failed for ng=%s: %s", eid, exc)
 
     def action_refresh_tree(self) -> None:
         self._rebuild()

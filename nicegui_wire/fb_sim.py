@@ -99,8 +99,17 @@ KIND_ROW        = 9
 KIND_COLUMN     = 10
 
 
+INVISIBLE_TAGS = {
+    "nicegui-timer",
+    "nicegui-keyboard",
+    "nicegui-page-title",
+}
+
+
 def _classify(node: Node) -> int:
     tag = node.tag
+    if tag in INVISIBLE_TAGS:
+        return KIND_NOTHING
     if tag in ("q-layout", "q-page-container", "q-page"):
         return KIND_COLUMN
     if tag == "div":
@@ -158,7 +167,12 @@ class FBSim:
         self.sniffer = Sniffer(url, verbose=False)
         self.tree: ElementTree = self.sniffer.tree
         self._dirty = True
-        self._focused_index: int = 0
+        # Track focus by element id (stable across re-renders) rather than
+        # by index into _focusable() — the latter is built up *during* the
+        # render pass, so the input that's drawing right now hasn't been
+        # registered yet, which made _hit_is_focused return False for the
+        # very element we wanted to highlight.
+        self._focused_id: int | None = None
         self._hitboxes: list[Hitbox] = []
         self._input_buffers: dict[int, str] = {}
         self._notify_text: str = ""
@@ -249,6 +263,8 @@ class FBSim:
             return y
 
         kind = _classify(node)
+        if kind == KIND_NOTHING:
+            return y
         children = self.tree.children(node.id)
 
         if kind == KIND_ROW:
@@ -401,23 +417,32 @@ class FBSim:
     def _focusable(self) -> list[Hitbox]:
         return [h for h in self._hitboxes if h.kind in (KIND_BUTTON, KIND_INPUT, KIND_CHECKBOX, KIND_SWITCH)]
 
+    def _focused_hit(self) -> Hitbox | None:
+        if self._focused_id is None:
+            return None
+        for h in self._focusable():
+            if h.ng_id == self._focused_id:
+                return h
+        return None
+
     def _move_focus(self, delta: int) -> None:
         focusables = self._focusable()
         if not focusables:
             return
-        self._focused_index = (self._focused_index + delta) % len(focusables)
+        ids = [h.ng_id for h in focusables]
+        if self._focused_id in ids:
+            i = ids.index(self._focused_id)
+        else:
+            i = -1 if delta > 0 else 0
+        self._focused_id = ids[(i + delta) % len(ids)]
 
     def _hit_is_focused(self, ng_id: int) -> bool:
-        focusables = self._focusable()
-        if not focusables:
-            return False
-        return focusables[self._focused_index % len(focusables)].ng_id == ng_id
+        return self._focused_id == ng_id
 
     async def _activate_focused(self) -> None:
-        focusables = self._focusable()
-        if not focusables:
+        h = self._focused_hit()
+        if h is None:
             return
-        h = focusables[self._focused_index % len(focusables)]
         if h.kind == KIND_BUTTON:
             try:
                 await self.sniffer.fire(h.ng_id, "click")
@@ -429,48 +454,47 @@ class FBSim:
                 new_val = not bool(node.props.get("model-value", False))
                 try:
                     await self.sniffer.fire(h.ng_id, "update:modelValue", args=new_val)
-                    # Optimistic update — the server's echo will correct if needed.
                     node.props["model-value"] = new_val
                 except Exception as e:
                     log.debug("fire toggle failed: %s", e)
 
     async def _type_char(self, ch: str) -> None:
-        focusables = self._focusable()
-        if not focusables:
+        h = self._focused_hit()
+        if h is None or h.kind != KIND_INPUT:
             return
-        h = focusables[self._focused_index % len(focusables)]
-        if h.kind == KIND_INPUT:
-            buf = self._input_buffers.get(h.ng_id)
-            if buf is None:
-                node = self.tree.nodes.get(h.ng_id)
-                buf = str(node.props.get("value", "") or "") if node else ""
-            buf += ch
+        buf = self._input_buffers.get(h.ng_id)
+        if buf is None:
+            node = self.tree.nodes.get(h.ng_id)
+            buf = str(node.props.get("value", "") or "") if node else ""
+        buf += ch
+        self._input_buffers[h.ng_id] = buf
+        try:
+            await self.sniffer.fire(h.ng_id, "update:value", args=buf)
+        except Exception as e:
+            log.debug("input send failed: %s", e)
+
+    async def _backspace_focused(self) -> None:
+        h = self._focused_hit()
+        if h is None or h.kind != KIND_INPUT:
+            return
+        buf = self._input_buffers.get(h.ng_id, "")
+        if buf:
+            buf = buf[:-1]
             self._input_buffers[h.ng_id] = buf
             try:
                 await self.sniffer.fire(h.ng_id, "update:value", args=buf)
             except Exception as e:
                 log.debug("input send failed: %s", e)
 
-    async def _backspace_focused(self) -> None:
-        focusables = self._focusable()
-        if not focusables:
-            return
-        h = focusables[self._focused_index % len(focusables)]
-        if h.kind == KIND_INPUT:
-            buf = self._input_buffers.get(h.ng_id, "")
-            if buf:
-                buf = buf[:-1]
-                self._input_buffers[h.ng_id] = buf
-                try:
-                    await self.sniffer.fire(h.ng_id, "update:value", args=buf)
-                except Exception as e:
-                    log.debug("input send failed: %s", e)
-
     async def _click_at(self, x: int, y: int) -> None:
-        for idx, h in enumerate(self._focusable()):
+        for h in self._focusable():
             if h.x <= x <= h.x + h.w and h.y <= y <= h.y + h.h:
-                self._focused_index = idx
-                await self._activate_focused()
+                self._focused_id = h.ng_id
+                # For inputs the focus alone is the activation (typing then
+                # types into it). Buttons / checkboxes / switches activate
+                # immediately on click.
+                if h.kind != KIND_INPUT:
+                    await self._activate_focused()
                 return
 
 
