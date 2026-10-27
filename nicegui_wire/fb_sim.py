@@ -324,8 +324,11 @@ class FBSim:
             pygame.draw.line(self.fb, BORDER, (x, y + 3), (x + w, y + 3))
             return y + 7
 
-        # Placeholder.
-        return self._draw_label(f"[{node.tag}]", x, y, w, color=TEXT_DIM)
+        # Placeholder, followed by whatever the unsupported container holds.
+        cy = self._draw_label(f"[{node.tag}]", x, y, w, color=TEXT_DIM)
+        for c in children:
+            cy = self._render_node(c, x, cy, w)
+        return cy
 
     # -- Primitives ------------------------------------------------------
 

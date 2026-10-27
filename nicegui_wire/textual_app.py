@@ -44,7 +44,7 @@ except ImportError as e:
     ) from e
 
 from .sniffer import Sniffer
-from .tree import Node
+from .tree import Node, child_ids
 
 
 log = logging.getLogger("nicegui_wire.tui")
@@ -184,6 +184,10 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
         return _decorate(v, node)
 
     ph = _Placeholder(f"[unsupported: {tag}]")
+    if children:  # keep the subtree of an unsupported container (q-header, q-splitter, ...)
+        w = Vertical(ph, *children)
+        w.styles.height = "auto"
+        return _decorate(w, node)
     return _decorate(ph, node)
 
 
@@ -304,7 +308,7 @@ class WireTuiApp(App):
             if widget is None:
                 self._rebuild()
                 return
-            new_kids = list(v.get("children") or [])
+            new_kids = child_ids(v)
             cur_kids = [getattr(c, "ng_id", None) for c in widget.children]
             cur_kids = [k for k in cur_kids if k is not None]
             if new_kids != cur_kids:

@@ -64,6 +64,11 @@ def hello_url(tmp_path_factory) -> str:
         "    ui.button('Inc', on_click=bump)\n"
         "    inp = ui.input('Name', value='')\n"
         "    ui.label().bind_text_from(inp, 'value', lambda v: f'you={v}')\n"
+        "    with ui.splitter() as s:\n"
+        "        with s.before:\n"
+        "            ui.label('left pane')\n"
+        "        with s.after:\n"
+        "            ui.label('right pane')\n"
         f"ui.run(host='127.0.0.1', port={port}, show=False, reload=False)\n"
     )
     # Scrub pytest-injected env so NiceGUI doesn't take its is_pytest branch

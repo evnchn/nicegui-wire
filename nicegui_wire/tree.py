@@ -30,6 +30,14 @@ from typing import Any, Iterator
 ROOT_ID = 0
 
 
+def child_ids(d: dict[str, Any]) -> list[int]:
+    """Default-slot children followed by named-slot children (``slots[name]["ids"]``)."""
+    ids = list(d.get("children") or [])
+    for slot in (d.get("slots") or {}).values():
+        ids.extend(slot.get("ids") or [])
+    return ids
+
+
 @dataclass
 class Node:
     """A single element in the wire tree."""
@@ -58,7 +66,7 @@ class Node:
             style=str(d.get("style") or ""),
             component=d.get("component"),
             events=list(d.get("events") or []),
-            children_ids=list(d.get("children") or []),
+            children_ids=child_ids(d),
             raw=d,
         )
 

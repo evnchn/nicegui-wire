@@ -58,3 +58,18 @@ async def test_input_value_propagates(hello_url):
         assert "ducky" in (s.tree.nodes[bound_label_id].text or "")
     finally:
         await s.client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_tui_renders_named_slots_of_unsupported_container(hello_url):
+    # ui.splitter: unsupported tag, children only in its "before"/"after" slots.
+    from textual.widgets import Static
+    from nicegui_wire.textual_app import WireTuiApp
+    app = WireTuiApp(hello_url)
+    async with app.run_test() as pilot:
+        for _ in range(40):
+            await pilot.pause(0.05)
+            texts = {str(w.content) for w in app.query(Static)}
+            if {"left pane", "right pane"} <= texts:
+                break
+        assert {"left pane", "right pane"} <= texts
