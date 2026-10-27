@@ -44,3 +44,16 @@ def test_root_fallback_when_no_zero():
         6: {"tag": "c"},
     })
     assert t.root().id == 5
+
+
+def test_named_slot_children_are_reachable():
+    # NiceGUI lists only default-slot children under "children"; e.g. ui.splitter
+    # puts its panes in the "before"/"after" slots.
+    t = ElementTree()
+    t.ingest_initial({
+        0: {"tag": "root", "children": [1]},
+        1: {"tag": "q-splitter", "slots": {"before": {"ids": [2]}, "after": {"ids": [3]}}},
+        2: {"tag": "div", "text": "left"},
+        3: {"tag": "div", "text": "right"},
+    })
+    assert [n.id for n, _ in t.walk()] == [0, 1, 2, 3]
