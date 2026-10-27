@@ -308,10 +308,7 @@ class WireTuiApp(App):
             if widget is None:
                 self._rebuild()
                 return
-            new_kids = child_ids(v)
-            cur_kids = [getattr(c, "ng_id", None) for c in widget.children]
-            cur_kids = [k for k in cur_kids if k is not None]
-            if new_kids != cur_kids:
+            if child_ids(v) != widget.ng_kids:  # type: ignore[attr-defined]
                 self._rebuild()
                 return
 
@@ -390,6 +387,7 @@ class WireTuiApp(App):
         w = _build(node, built_children, self)
         if w is None:
             return None
+        w.ng_kids = node.children_ids  # type: ignore[attr-defined]  # wire ids it was built from; leaf widgets drop them
         self._widgets[node.id] = w
         return w
 

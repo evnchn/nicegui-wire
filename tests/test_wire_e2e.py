@@ -73,3 +73,19 @@ async def test_tui_renders_named_slots_of_unsupported_container(hello_url):
             if {"left pane", "right pane"} <= texts:
                 break
         assert {"left pane", "right pane"} <= texts
+
+
+@pytest.mark.asyncio
+async def test_tui_value_update_on_slotted_input_does_not_rebuild(hello_url):
+    # The Input widget drops its prepend-slot icon; a value-only update must
+    # still patch in place, since a rebuild steals focus while typing.
+    from nicegui_wire.textual_app import WireTuiApp
+    app = WireTuiApp(hello_url)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.5)
+        node = next(n for n in app.sniffer.tree.nodes.values()
+                    if n.tag == "nicegui-input" and n.props.get("label") == "Slotted")
+        rebuilds = []
+        app._rebuild = lambda: rebuilds.append(1)
+        app._patch_or_rebuild({str(node.id): {**node.raw, "props": {**node.props, "value": "ab"}}})
+        assert rebuilds == []
