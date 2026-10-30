@@ -226,11 +226,10 @@ class WireClient:
         ok = await self._handshake()
         if self._closed or self.sio is None or self.sio.sid != sid or not self.sio.connected:
             return  # a later reconnect owns the session now
+        # still on this socket: rejected, or no answer on a live link; either way start over
         if ok:
             self._ready.set()
             return
-        if ok is None:
-            return  # no answer; Socket.IO is still in charge of the link
         self.log.info("handshake rejected after reconnect; re-bootstrapping")
         await self._rebootstrap()
 
@@ -247,6 +246,10 @@ class WireClient:
             await self.connect(reload=True)
         except Exception:
             self.log.exception("re-bootstrap failed")
+            self._closed = True
+            for task in self._pending:
+                if task is not asyncio.current_task():
+                    task.cancel()
             self._disconnect_event.set()
         finally:
             self._replacing = False
@@ -322,7 +325,7 @@ class WireClient:
     async def send_ack(self, next_message_id: int) -> None:
         """Acknowledge all server messages up to (and including) ``next_message_id - 1``."""
         assert self.sio is not None and self.bootstrap is not None
-        await self.sio.emit("ack", {
+        await self._emit_when_ready("ack", {
             "client_id": self.bootstrap.client_id,
             "next_message_id": next_message_id,
         })
