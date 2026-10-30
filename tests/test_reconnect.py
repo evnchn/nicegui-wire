@@ -82,6 +82,7 @@ class CuttableProxy:
         self.target_port = target_port
         self.up = True
         self.writers: set[asyncio.StreamWriter] = set()
+        self.accepted = 0
 
     async def start(self) -> int:
         self.server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
@@ -91,6 +92,7 @@ class CuttableProxy:
         if not self.up:
             writer.close()
             return
+        self.accepted += 1
         up_reader, up_writer = await asyncio.open_connection("127.0.0.1", self.target_port)
         self.writers |= {writer, up_writer}
 
@@ -127,6 +129,11 @@ async def _until(predicate, timeout: float = 8.0) -> bool:
     return False
 
 
+async def _cut_and_wait(proxy: CuttableProxy, s: Sniffer) -> None:
+    proxy.cut()
+    assert await _until(lambda: not s.client._ready.is_set()), "client never noticed the drop"
+
+
 async def _click(s: Sniffer) -> None:
     btn = next(nid for nid, n in s.tree.nodes.items() if n.tag == "q-btn")
     await s.fire(btn, "click")
@@ -145,11 +152,11 @@ async def test_short_drop_resumes_and_replays_missed_updates(server_port):
     proxy, s = await _connect(server_port)
     try:
         client_id = s.client.bootstrap.client_id
-        proxy.cut()
-        await asyncio.sleep(0.2)
+        await _cut_and_wait(proxy, s)
         # Sent while the socket is down: only the server's message history has it.
         await asyncio.to_thread(urllib.request.urlopen, f"http://127.0.0.1:{server_port}/poke")
         await _click(s)  # a press while the link is down is held, as the browser does
+        assert s.client._pending, "press was not held"
         proxy.up = True
         assert await _until(lambda: _text(s, "poked") is not None), "missed update never replayed"
         assert s.client.bootstrap.client_id == client_id, "resumed as a new client"
@@ -167,8 +174,9 @@ async def test_long_drop_rebootstraps_like_a_browser_reload(server_port):
         client_id = s.client.bootstrap.client_id
         await _click(s)
         assert await _until(lambda: _text(s, "count = 1") is not None)
-        proxy.cut()
+        await _cut_and_wait(proxy, s)
         await _click(s)  # meant for the old page: must not land on the new one
+        assert s.client._pending, "press was not held"
         await asyncio.sleep(2.5)  # past reconnect_timeout=1.0: the server deletes the client
         proxy.up = True
         assert await _until(lambda: s.client.bootstrap.client_id != client_id), "never re-bootstrapped"
@@ -198,3 +206,26 @@ async def test_server_reload_request_rebootstraps(server_port):
     finally:
         proxy.close()
         await s.client.disconnect()
+
+
+async def test_disconnect_during_an_outage_is_final(server_port):
+    proxy, s = await _connect(server_port)
+    try:
+        await _cut_and_wait(proxy, s)
+        accepted = proxy.accepted
+        await s.client.disconnect()
+        proxy.up = True
+        await asyncio.sleep(3.0)  # longer than Socket.IO's retry delay
+        assert proxy.accepted == accepted, "reconnected after disconnect()"
+    finally:
+        proxy.close()
+
+
+def test_replayed_message_ids_are_dropped():
+    from nicegui_wire.sio_client import WireClient
+    client = WireClient("http://127.0.0.1/")
+    seen = []
+    client.on_message(lambda event, data: seen.append(data["_id"]))
+    for message_id in (0, 1, 1, 0, 2):
+        client._dispatch("notify", {"_id": message_id})
+    assert seen == [0, 1, 2]
