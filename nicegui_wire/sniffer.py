@@ -73,6 +73,10 @@ class Sniffer:
     def _on_message(self, event: str, data: Any) -> None:
         if event == "update" and isinstance(data, dict):
             self.tree.apply_update(data)
+        elif event == "reload":  # the server forgot us; start over from the fresh page
+            self.tree.nodes.clear()
+            self.tree.ingest_initial(data.elements)
+            data = {"client_id": data.client_id, "elements_count": len(data.elements)}
         self._record(event, data)
 
     async def fire(self, element_id: int, event_type: str, args: Any = None) -> None:

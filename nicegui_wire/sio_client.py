@@ -97,6 +97,15 @@ class WireClient:
         self._connected_event = asyncio.Event()
         self._next_message_id: int = 0
         self._owned_session = True
+        self._handshaken = False  # set once the first handshake succeeds; later connects are reconnects
+        self._replacing = False  # tearing down a socket to re-bootstrap, not ending the session
+        # Like the browser, hold events while the link is down and send them once
+        # re-handshaken; drop them if the page was re-bootstrapped meanwhile.
+        self._ready = asyncio.Event()
+        self._generation = 0
+        self._pending: set[asyncio.Task] = set()
+        self._resume_task: asyncio.Task | None = None
+        self._closed = False
 
     # ------------------------------------------------------------------
     # Context manager
@@ -121,15 +130,21 @@ class WireClient:
         """
         self._handlers.append(handler)
 
-    async def connect(self) -> None:
+    async def connect(self, *, reload: bool = False) -> None:
         """Fetch the bootstrap page and open the Socket.IO connection."""
         self.bootstrap = await self._fetch_bootstrap()
+        if reload:  # before the handshake, so no update lands on the old tree
+            self._generation += 1
+            self._dispatch("reload", self.bootstrap)
         cid = self.bootstrap.client_id
         prefix = self.bootstrap.prefix or ""
         self._next_message_id = self.bootstrap.next_message_id
 
+        # Reconnect like the browser does: Socket.IO retries the link, then the
+        # 'connect' handler re-handshakes with the next message id we expect so
+        # the server replays what it sent while we were gone.
         self.sio = socketio.AsyncClient(
-            reconnection=False,
+            reconnection=True,
             logger=False,
             engineio_logger=False,
         )
@@ -177,25 +192,76 @@ class WireClient:
             wait=True,
         )
 
-        # Explicit handshake.
+        if await self._handshake() is not True:
+            raise ConnectionError(f"NiceGUI rejected the handshake for client {cid}")
+        self._handshaken = True
+        self._ready.set()
+
+    async def _handshake(self) -> bool | None:
+        """Explicit handshake. NiceGUI acks it with False when it no longer knows the client.
+
+        Returns None when no answer came, e.g. the link dropped again meanwhile.
+        """
+        assert self.sio is not None and self.bootstrap is not None
         handshake_data = {
-            "client_id": cid,
+            "client_id": self.bootstrap.client_id,
             "tab_id": self.tab_id,
             "document_id": self.document_id,
             "next_message_id": self._next_message_id,
         }
         self.log.debug("emitting handshake: %s", handshake_data)
-        await self.sio.emit("handshake", handshake_data)
-        # A successful NiceGUI handshake does not send back an ack. If the
-        # page already caused outbox messages to queue (e.g. reconnecting
-        # to a session that had pending updates) we'll see them within a
-        # tick. Otherwise the socket just sits idle until the server has
-        # something to say, which is fine.
+        try:
+            return await self.sio.call("handshake", handshake_data, timeout=10) is True
+        except (socketio.exceptions.TimeoutError, socketio.exceptions.BadNamespaceError):
+            return None
+
+    async def _resume(self, sid: str | None) -> None:
+        """Re-handshake after Socket.IO reconnected; re-bootstrap if the server forgot us.
+
+        A link down longer than the page's ``reconnect_timeout`` gets a False
+        handshake: the server has deleted the client. The browser reloads the
+        page then, so we fetch it again and tell handlers with a ``reload``
+        message carrying the new bootstrap.
+        """
+        ok = await self._handshake()
+        if self._closed or self.sio is None or self.sio.sid != sid or not self.sio.connected:
+            return  # a later reconnect owns the session now
+        # still on this socket: rejected, or no answer on a live link; either way start over
+        if ok:
+            self._ready.set()
+            return
+        self.log.info("handshake rejected after reconnect; re-bootstrapping")
+        await self._rebootstrap()
+
+    async def _rebootstrap(self) -> None:
+        if self._replacing or self._closed:
+            return
+        self._ready.clear()
+        self._replacing = True
+        try:
+            await self.sio.disconnect()
+        finally:
+            self._handshaken = False
+        try:
+            await self.connect(reload=True)
+        except Exception:
+            self.log.exception("re-bootstrap failed")
+            self._closed = True
+            for task in self._pending:
+                if task is not asyncio.current_task():
+                    task.cancel()
+            self._disconnect_event.set()
+        finally:
+            self._replacing = False
 
     async def disconnect(self) -> None:
-        if self.sio is not None and self.sio.connected:
+        self._closed = True
+        for task in [*self._pending, self._resume_task]:
+            if task is not None:
+                task.cancel()
+        if self.sio is not None:
             try:
-                await self.sio.disconnect()
+                await self.sio.shutdown()  # also stops a reconnect in progress
             except Exception:
                 pass
         self._disconnect_event.set()
@@ -236,12 +302,30 @@ class WireClient:
             "type": event_type,
             "args": args_list,
         }
-        await self.sio.emit("event", payload)
+        await self._emit_when_ready("event", payload)
+
+    async def _emit_when_ready(self, event: str, payload: dict) -> None:
+        if self._ready.is_set():
+            try:
+                await self.sio.emit(event, payload)
+                return
+            except socketio.exceptions.BadNamespaceError:  # dropped before we heard
+                pass
+        generation = self._generation
+
+        async def later() -> None:
+            await self._ready.wait()
+            if generation == self._generation:
+                await self.sio.emit(event, payload)
+
+        task = asyncio.create_task(later())
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     async def send_ack(self, next_message_id: int) -> None:
         """Acknowledge all server messages up to (and including) ``next_message_id - 1``."""
         assert self.sio is not None and self.bootstrap is not None
-        await self.sio.emit("ack", {
+        await self._emit_when_ready("ack", {
             "client_id": self.bootstrap.client_id,
             "next_message_id": next_message_id,
         })
@@ -270,11 +354,17 @@ class WireClient:
         @self.sio.on("connect")
         async def _on_connect():
             self.log.debug("sio connected sid=%s", self.sio.sid)
+            if self._handshaken and not self._closed:  # a reconnect; calling from a handler would block the read loop
+                if self._resume_task is not None:
+                    self._resume_task.cancel()
+                self._resume_task = asyncio.create_task(self._resume(self.sio.sid))
 
         @self.sio.on("disconnect")
-        async def _on_disconnect():
-            self.log.debug("sio disconnected")
-            self._disconnect_event.set()
+        async def _on_disconnect(reason=None):
+            self.log.debug("sio disconnected: %s", reason)
+            self._ready.clear()
+            if reason != socketio.AsyncClient.reason.TRANSPORT_ERROR and not self._replacing:
+                self._disconnect_event.set()
 
         # Final catch-all for anything we didn't enumerate (future NiceGUI versions).
         @self.sio.on("*")
@@ -285,9 +375,18 @@ class WireClient:
         if not self._connected_event.is_set():
             self._connected_event.set()
 
-        # Track message IDs so we can ACK.
+        # Drop what we already have, as nicegui.js does: a rewind can replay it.
         if isinstance(data, dict) and isinstance(data.get("_id"), int):
-            self._next_message_id = max(self._next_message_id, data["_id"] + 1)
+            if data["_id"] < self._next_message_id:
+                return
+            self._next_message_id = data["_id"] + 1
+
+        # NiceGUI asks the browser to reload when it cannot replay what we
+        # missed (outbox rewind failed). Without this the tree goes stale.
+        if event == "run_javascript" and "location.reload()" in str((data or {}).get("code", "")):
+            task = asyncio.create_task(self._rebootstrap())
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
 
         for handler in self._handlers:
             try:
