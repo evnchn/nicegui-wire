@@ -222,17 +222,24 @@ class WireClient:
             self._ready.set()
             return
         self.log.info("handshake rejected after reconnect; re-bootstrapping")
+        await self._rebootstrap()
+
+    async def _rebootstrap(self) -> None:
+        if self._replacing:
+            return
+        self._ready.clear()
         self._replacing = True
         try:
             await self.sio.disconnect()
         finally:
-            self._replacing = False
-        self._handshaken = False
+            self._handshaken = False
         try:
             await self.connect(reload=True)
         except Exception:
             self.log.exception("re-bootstrap failed")
             self._disconnect_event.set()
+        finally:
+            self._replacing = False
 
     async def disconnect(self) -> None:
         for task in self._pending:
@@ -350,6 +357,13 @@ class WireClient:
     def _dispatch(self, event: str, data: Any) -> None:
         if not self._connected_event.is_set():
             self._connected_event.set()
+
+        # NiceGUI asks the browser to reload when it cannot replay what we
+        # missed (outbox rewind failed). Without this the tree goes stale.
+        if event == "run_javascript" and "location.reload()" in str((data or {}).get("code", "")):
+            task = asyncio.create_task(self._rebootstrap())
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
 
         # Track message IDs so we can ACK.
         if isinstance(data, dict) and isinstance(data.get("_id"), int):

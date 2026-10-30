@@ -22,7 +22,11 @@ from nicegui_wire.sniffer import Sniffer
 
 APP = """
 from nicegui import app, ui
-labels = []
+labels, clients = [], []
+@app.get('/rewind_failed')
+def rewind_failed():  # what NiceGUI's outbox sends when it cannot replay the gap
+    for client in clients:
+        client.run_javascript('console.log("reloading because outbox rewind failed"); window.location.reload()')
 @app.get('/poke')
 def poke():
     for label in labels:
@@ -32,6 +36,7 @@ def poke():
 @ui.page('/short', reconnect_timeout=1.0)
 def index():
     labels.append(ui.label('fresh'))
+    clients.append(ui.context.client)
     count = ui.label('count = 0')
     def bump():
         count.text = 'count = %d' % (int(count.text.split()[-1]) + 1)
@@ -174,6 +179,22 @@ async def test_long_drop_rebootstraps_like_a_browser_reload(server_port):
         assert _text(s, "count = 0") is not None, "a press from the old page reached the new one"
         await _click(s)
         assert await _until(lambda: _text(s, "count = 1") is not None), "events lost after re-bootstrap"
+    finally:
+        proxy.close()
+        await s.client.disconnect()
+
+
+async def test_server_reload_request_rebootstraps(server_port):
+    proxy, s = await _connect(server_port)
+    try:
+        client_id = s.client.bootstrap.client_id
+        await _click(s)
+        assert await _until(lambda: _text(s, "count = 1") is not None)
+        await asyncio.to_thread(urllib.request.urlopen, f"http://127.0.0.1:{server_port}/rewind_failed")
+        assert await _until(lambda: s.client.bootstrap.client_id != client_id), "reload request ignored"
+        assert await _until(lambda: _text(s, "count = 0") is not None)
+        await _click(s)
+        assert await _until(lambda: _text(s, "count = 1") is not None), "events lost after reload"
     finally:
         proxy.close()
         await s.client.disconnect()
