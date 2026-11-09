@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -107,6 +108,8 @@ class WireClient:
         self._ready = asyncio.Event()
         self._generation = 0
         self._pending: set[asyncio.Task] = set()
+        self._held: deque[tuple[int, str, dict]] = deque()  # (generation, event, payload), sent in order
+        self._flusher: asyncio.Task | None = None
         self._resume_task: asyncio.Task | None = None
         self._closed = False
 
@@ -313,31 +316,32 @@ class WireClient:
     async def _emit_when_ready(self, event: str, payload: dict) -> None:
         if self._closed:
             raise ConnectionError("client is disconnected")
-        if self._ready.is_set():
+        if self._ready.is_set() and not self._held:
             try:
                 await self.sio.emit(event, payload)
                 return
             except socketio.exceptions.BadNamespaceError:  # dropped before we heard
                 pass
-        if len(self._pending) >= MAX_HELD_EVENTS:
-            self.log.warning("link down and %d events held; dropping %s", len(self._pending), event)
+        if len(self._held) >= MAX_HELD_EVENTS:
+            self.log.warning("link down and %d events held; dropping %s", len(self._held), event)
             return
-        generation = self._generation
+        self._held.append((self._generation, event, payload))
+        if self._flusher is None or self._flusher.done():
+            self._flusher = asyncio.create_task(self._flush_held())
+            self._pending.add(self._flusher)
+            self._flusher.add_done_callback(self._pending.discard)
 
-        async def later() -> None:
-            while generation == self._generation and not self._closed:
-                await self._ready.wait()
-                if generation != self._generation or self._closed:
-                    return
+    async def _flush_held(self) -> None:
+        while self._held and not self._closed:
+            await self._ready.wait()
+            generation, event, payload = self._held[0]
+            if generation == self._generation:
                 try:
                     await self.sio.emit(event, payload)
-                    return
                 except socketio.exceptions.BadNamespaceError:  # dropped again before we ran
                     await asyncio.sleep(0.1)
-
-        task = asyncio.create_task(later())
-        self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
+                    continue
+            self._held.popleft()
 
     async def send_ack(self, next_message_id: int) -> None:
         """Acknowledge all server messages up to (and including) ``next_message_id - 1``."""

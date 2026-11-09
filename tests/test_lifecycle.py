@@ -24,6 +24,7 @@ class FakeSio:
         self.sid = "sid"
         self.sent: list[tuple[str, dict]] = []
         self.shutdowns = 0
+        self.flaky = 0  # emits to fail as if the namespace dropped, even while connected
         FakeSio.instances.append(self)
 
     def on(self, _event, handler=None):
@@ -36,7 +37,8 @@ class FakeSio:
         return self.handshake_answer
 
     async def emit(self, event: str, payload: dict) -> None:
-        if not self.connected:
+        if not self.connected or self.flaky:
+            self.flaky = max(0, self.flaky - 1)
             raise socketio.exceptions.BadNamespaceError("/ is not a connected namespace.")
         self.sent.append((event, payload))
 
@@ -90,6 +92,23 @@ async def test_held_event_survives_a_second_drop(client):
     assert sio.sent == [("event", {"n": 1})]
 
 
+async def test_held_events_keep_their_order(client):
+    await client.connect()
+    sio = client.sio
+    sio.connected = False
+    client._ready.clear()
+    await client._emit_when_ready("event", {"n": 1})
+    await _settle()
+
+    sio.connected = True
+    sio.flaky = 1  # the held event's first try hits a namespace that is not back yet
+    client._ready.set()
+    await _settle()
+    await client._emit_when_ready("event", {"n": 2})  # a fresh send must not overtake it
+    await asyncio.sleep(0.3)
+    assert [p["n"] for _, p in sio.sent] == [1, 2]
+
+
 async def test_send_after_disconnect_is_rejected(client):
     await client.connect()
     await client.disconnect()
@@ -104,7 +123,8 @@ async def test_held_events_are_bounded(client):
     client._ready.clear()
     for n in range(1000):
         await client._emit_when_ready("event", {"n": n})
-    assert len(client._pending) <= getattr(sio_client, "MAX_HELD_EVENTS", 100)
+    held = getattr(client, "_held", client._pending)
+    assert len(held) == getattr(sio_client, "MAX_HELD_EVENTS", 100)
     await client.disconnect()
 
 
