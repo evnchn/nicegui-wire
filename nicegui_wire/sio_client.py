@@ -47,6 +47,9 @@ from .html_parser import BootstrapConfig, parse_bootstrap
 
 log = logging.getLogger("nicegui_wire.sio")
 
+# ponytail: drop-newest past this many events held during an outage; a real queue if input must never be lost
+MAX_HELD_EVENTS = 100
+
 # Every server→client event NiceGUI is known to emit. We register handlers
 # for each so socketio's AsyncClient doesn't just drop them silently.
 KNOWN_SERVER_EVENTS = (
@@ -185,15 +188,18 @@ class WireClient:
         # polling query string but the WebSocket-upgraded scope drops it),
         # which then tears the connection down prematurely. WebSocket-only
         # matches what the browser does after upgrade anyway.
-        await self.sio.connect(
-            sio_url,
-            socketio_path=socketio_path,
-            transports=["websocket"],
-            wait=True,
-        )
-
-        if await self._handshake() is not True:
-            raise ConnectionError(f"NiceGUI rejected the handshake for client {cid}")
+        try:
+            await self.sio.connect(
+                sio_url,
+                socketio_path=socketio_path,
+                transports=["websocket"],
+                wait=True,
+            )
+            if await self._handshake() is not True:
+                raise ConnectionError(f"NiceGUI rejected the handshake for client {cid}")
+        except BaseException:
+            await self.sio.shutdown()
+            raise
         self._handshaken = True
         self._ready.set()
 
@@ -305,18 +311,29 @@ class WireClient:
         await self._emit_when_ready("event", payload)
 
     async def _emit_when_ready(self, event: str, payload: dict) -> None:
+        if self._closed:
+            raise ConnectionError("client is disconnected")
         if self._ready.is_set():
             try:
                 await self.sio.emit(event, payload)
                 return
             except socketio.exceptions.BadNamespaceError:  # dropped before we heard
                 pass
+        if len(self._pending) >= MAX_HELD_EVENTS:
+            self.log.warning("link down and %d events held; dropping %s", len(self._pending), event)
+            return
         generation = self._generation
 
         async def later() -> None:
-            await self._ready.wait()
-            if generation == self._generation:
-                await self.sio.emit(event, payload)
+            while generation == self._generation and not self._closed:
+                await self._ready.wait()
+                if generation != self._generation or self._closed:
+                    return
+                try:
+                    await self.sio.emit(event, payload)
+                    return
+                except socketio.exceptions.BadNamespaceError:  # dropped again before we ran
+                    await asyncio.sleep(0.1)
 
         task = asyncio.create_task(later())
         self._pending.add(task)
