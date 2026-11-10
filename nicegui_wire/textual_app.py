@@ -280,6 +280,8 @@ class WireTuiApp(App):
             # update destroys focus, which means the user loses keystrokes
             # the moment a server-side binding fires (the typical case).
             self.call_later(lambda d=data: self._patch_or_rebuild(d))
+        elif event == "reload":  # the sniffer already swapped in the fresh tree
+            self.call_later(self._rebuild)
         elif event == "notify" and isinstance(data, dict):
             message = str(data.get("message", ""))
             ntype = str(data.get("type", "info"))
