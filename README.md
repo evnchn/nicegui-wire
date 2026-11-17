@@ -24,9 +24,10 @@ What works:
 - Textual TUI renderer with ~10 widget types.
 - 320×240 framebuffer renderer (pygame-ce) with keyboard + mouse input.
 - Proven against the bundled `examples/hello.py` dev server (counter, label, input round-trip clean). **Not tested against `nicegui.io` or other production sites.**
+- Rendered (TUI) all 133 pages of a **local** copy of the NiceGUI 4.0 docs site without crashing; 791 elements still show as `[unsupported: …]` (mostly `q-tree` and images), down from 12,829.
 
 What's limited:
-- Widget palette is a subset (same scope as nicegui-tui v0.0.1). Unknown tags render as `[unsupported: <tag>]`.
+- Widget palette is a subset (same scope as nicegui-tui v0.0.1). Other elements show only their text (`ui.link`, `ui.html` and `ui.markdown` reduced to plain text) and children; an element with neither renders as `[unsupported: <tag>]`.
 - No Vue component rendering (anything `q-*` that isn't in the factory just shows its tag name).
 - Tree is rebuilt wholesale on every `update` — fine for weekend-hack correctness, bad for large pages.
 - No cookies / session auth yet — sites that gate the page behind login won't work.

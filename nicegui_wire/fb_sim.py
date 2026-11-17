@@ -43,7 +43,7 @@ except ImportError as e:
     raise ImportError("pygame is required for ngwire fb. Install with `pip install nicegui-wire[fb]`") from e
 
 from .sniffer import Sniffer
-from .tree import ElementTree, Node
+from .tree import INVISIBLE_TAGS, ElementTree, Node, display_text, is_hidden
 
 
 log = logging.getLogger("nicegui_wire.fb")
@@ -99,16 +99,9 @@ KIND_ROW        = 9
 KIND_COLUMN     = 10
 
 
-INVISIBLE_TAGS = {
-    "nicegui-timer",
-    "nicegui-keyboard",
-    "nicegui-page-title",
-}
-
-
 def _classify(node: Node) -> int:
     tag = node.tag
-    if tag in INVISIBLE_TAGS:
+    if tag in INVISIBLE_TAGS or is_hidden(node):
         return KIND_NOTHING
     if tag in ("q-layout", "q-page-container", "q-page"):
         return KIND_COLUMN
@@ -130,13 +123,18 @@ def _classify(node: Node) -> int:
         return KIND_SEPARATOR
     if tag == "q-card":
         return KIND_CARD
+    if not node.children_ids:
+        if display_text(node):  # ui.link, ui.html, ui.markdown, ...
+            return KIND_LABEL
+        if tag == "a" or "innerHTML" in node.props:  # an anchor target, or markup with no text
+            return KIND_NOTHING
     return KIND_PLACEHOLDER
 
 
 def _label_of(node: Node) -> str:
-    if node.text is not None:
-        return str(node.text)
-    return str(node.props.get("label") or node.tag)
+    if node.text is not None or "innerHTML" in node.props:
+        return display_text(node)
+    return str(node.props.get("label") or node.props.get("icon") or node.tag)
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +323,11 @@ class FBSim:
             return y + 7
 
         # Placeholder, followed by whatever the unsupported container holds.
-        cy = self._draw_label(f"[{node.tag}]", x, y, w, color=TEXT_DIM)
+        cy = y
+        if text := display_text(node):
+            cy = self._draw_label(text, x, y, w)
+        elif not children:
+            cy = self._draw_label(f"[{node.tag}]", x, y, w, color=TEXT_DIM)
         for c in children:
             cy = self._render_node(c, x, cy, w)
         return cy

@@ -6,23 +6,27 @@ NiceGUI. It consumes the :class:`~nicegui_wire.tree.ElementTree` that
 renders those raw tag/props dicts as Textual widgets.
 
 Because we speak the wire, the same code works against any NiceGUI site
-— your own, nicegui.io's docs, anything reachable over HTTP + Socket.IO.
+reachable over HTTP + Socket.IO (tested against small apps and a local
+copy of the NiceGUI 4.0 docs site, never nicegui.io itself).
 
 Supported tags (v0.0.1):
 
     q-layout / q-page-container / q-page   invisible passthrough
     div                                    container or label (by class / text)
-    q-btn                                  Button
+    q-btn                                  Button (label, else icon name)
     nicegui-input                          Input
     q-checkbox                             Checkbox
     q-toggle                               Switch
-    q-select                               Select (labels from props.options)
+    q-select / nicegui-select              Select (labels from props.options)
     q-separator                            Rule
     q-card                                 Vertical border
     q-markdown / markdown-element          Markdown
-    q-tabs / q-tab-panels                  flat fallback to Vertical
 
-Everything else renders as a muted ``[unsupported: <tag>]`` placeholder.
+Closed popups (tooltips, menus, dialogs) and elements a browser draws
+nothing for are skipped. Any other element shows its own text (``text``,
+``label``, or ``innerHTML`` reduced to text, which covers ui.link, ui.html
+and ui.markdown) followed by its children; only an element with neither
+renders as a muted ``[unsupported: <tag>]`` placeholder.
 """
 from __future__ import annotations
 
@@ -33,6 +37,7 @@ from typing import Any
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
+    from textual.content import Content
     from textual.containers import Horizontal, Vertical, VerticalScroll
     from textual.widget import Widget
     from textual.widgets import (
@@ -44,7 +49,7 @@ except ImportError as e:
     ) from e
 
 from .sniffer import Sniffer
-from .tree import Node, child_ids
+from .tree import INVISIBLE_TAGS, Node, child_ids, display_text, is_hidden
 
 
 log = logging.getLogger("nicegui_wire.tui")
@@ -87,13 +92,6 @@ class _Placeholder(Static):
     """
 
 
-_INVISIBLE_TAGS = {
-    "nicegui-timer",
-    "nicegui-keyboard",
-    "nicegui-page-title",
-}
-
-
 def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | None:
     """Return a Textual widget for the given wire node.
 
@@ -106,7 +104,7 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
     """
     tag = node.tag
 
-    if tag in _INVISIBLE_TAGS:
+    if tag in INVISIBLE_TAGS or is_hidden(node):
         return None
 
     if tag in ("q-layout", "q-page-container", "q-page"):
@@ -116,7 +114,7 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
 
     if tag == "div":
         if node.text is not None and not children:
-            return _decorate(Static(str(node.text)), node)
+            return _decorate(Static(Content(str(node.text))), node)
         if _is_row(node):
             w = Horizontal(*children)
         elif _is_column(node) or _is_content(node):
@@ -127,8 +125,8 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
         return _decorate(w, node)
 
     if tag == "q-btn":
-        label = _label_text(node) or "Button"
-        btn = Button(label, id=f"ng-{node.id}")
+        label = _label_text(node) or str(node.props.get("icon") or "") or "Button"
+        btn = Button(Content(label), id=f"ng-{node.id}")
         app._register_button(node.id, btn)
         return _decorate(btn, node)
 
@@ -139,14 +137,14 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
         inp = Input(value=value, placeholder=placeholder, password=is_password, id=f"ng-{node.id}")
         label = node.props.get("label")
         if label:
-            inp.border_title = str(label)
+            inp.border_title = Content(str(label))
         app._register_input(node.id, inp)
         return _decorate(inp, node)
 
     if tag == "q-checkbox":
         value = bool(node.props.get("model-value", False))
         text = _label_text(node)
-        cb = Checkbox(text, value=value, id=f"ng-{node.id}")
+        cb = Checkbox(Content(text), value=value, id=f"ng-{node.id}")
         app._register_toggle(node.id, cb, "update:modelValue")
         return _decorate(cb, node)
 
@@ -154,24 +152,25 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
         value = bool(node.props.get("model-value", False))
         sw = Switch(value=value, id=f"ng-{node.id}")
         if text := _label_text(node):
-            sw.tooltip = text
+            sw.tooltip = Content(text)
         app._register_toggle(node.id, sw, "update:modelValue")
         return _decorate(sw, node)
 
-    if tag == "q-select":
+    if tag in ("q-select", "nicegui-select"):  # ui.select is nicegui-select since NiceGUI 3
         options = node.props.get("options", []) or []
         labels = [
             str(o.get("label", o) if isinstance(o, dict) else o)
             for o in options
         ] or [""]
-        pairs = [(lbl, i) for i, lbl in enumerate(labels)]
-        sel = Select(options=pairs, id=f"ng-{node.id}")
+        pairs = [(Content(lbl), i) for i, lbl in enumerate(labels)]
+        current = next((i for i, o in enumerate(options) if o == node.props.get("model-value")), Select.BLANK)
+        sel = Select(options=pairs, value=current, id=f"ng-{node.id}")
         return _decorate(sel, node)
 
     if tag in ("q-separator",):
         return _decorate(Rule(), node)
 
-    if tag in ("q-markdown", "markdown-element", "nicegui-markdown"):
+    if tag in ("q-markdown", "markdown-element"):
         content = str(node.props.get("content", "") or node.text or "")
         md = Markdown(content)
         return _decorate(md, node)
@@ -183,12 +182,16 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
         v.styles.padding = (0, 1)
         return _decorate(v, node)
 
-    ph = _Placeholder(f"[unsupported: {tag}]")
-    if children:  # keep the subtree of an unsupported container (q-header, q-splitter, ...)
-        w = Vertical(ph, *children)
-        w.styles.height = "auto"
-        return _decorate(w, node)
-    return _decorate(ph, node)
+    # Anything else (ui.link, ui.html, ui.markdown, ui.expansion, ui.header, ...):
+    # show its own text, then its children; a placeholder only if it has neither.
+    text = display_text(node)
+    if not children and not text and (tag == "a" or "innerHTML" in node.props or node.children_ids):
+        return None  # an anchor target, markup with no text (an icon, an svg), or only such children
+    if not children:
+        return _decorate(Static(Content(text)) if text else _Placeholder(f"[unsupported: {tag}]"), node)
+    w = Vertical(Static(Content(text)), *children) if text else Vertical(*children)
+    w.styles.height = "auto"
+    return _decorate(w, node)
 
 
 def _decorate(w: Widget, node: Node) -> Widget:
@@ -330,15 +333,17 @@ class WireTuiApp(App):
             try:
                 if tag == "div" and isinstance(widget, Static):
                     if new_text is not None:
-                        widget.update(str(new_text))
-                elif tag in ("q-markdown", "markdown-element", "nicegui-markdown"):
+                        widget.update(Content(str(new_text)))
+                elif type(widget) is Static and tag != "div":  # generic text element built by the fallback
+                    widget.update(Content(display_text(Node.from_dict(v))))
+                elif tag in ("q-markdown", "markdown-element"):
                     content = str(new_props.get("content", "") or new_text or "")
                     if isinstance(widget, _Markdown):
                         widget.update(content)
                 elif tag == "q-btn" and isinstance(widget, Button):
-                    label = new_props.get("label") or new_text or ""
+                    label = new_props.get("label") or new_text or new_props.get("icon") or ""
                     if label:
-                        widget.label = str(label)
+                        widget.label = Content(str(label))
                 elif tag == "nicegui-input" and isinstance(widget, Input):
                     # Don't overwrite the focused input — that erases what
                     # the user is typing. A server-initiated value change
