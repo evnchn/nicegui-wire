@@ -88,8 +88,10 @@ def hello_url(tmp_path_factory) -> str:
         "    ui.label(\"people=[Person(name='Bob', age=21)]\")\n"
         "    ui.select([\"opt=[x=1]\"], value=\"opt=[x=1]\")\n"
         "    ui.switch(\"sw=[y=2]\")\n"
-        "    with ui.dialog():\n"
+        "    with ui.dialog() as dlg:\n"
         "        ui.label('secret dialog')\n"
+        "        ui.button('Close dlg', on_click=dlg.close)\n"
+        "    ui.button('Open dlg', on_click=dlg.open)\n"
         f"ui.run(host='127.0.0.1', port={port}, show=False, reload=False)\n"
     )
     # Scrub pytest-injected env so NiceGUI doesn't take its is_pytest branch

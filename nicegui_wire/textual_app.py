@@ -313,7 +313,7 @@ class WireTuiApp(App):
             if widget is None:
                 self._rebuild()
                 return
-            if child_ids(v) != widget.ng_kids:  # type: ignore[attr-defined]
+            if child_ids(v) != widget.ng_kids or is_hidden(Node.from_dict(v)):  # type: ignore[attr-defined]  # also: a dialog/menu just closed
                 self._rebuild()
                 return
 

@@ -123,4 +123,15 @@ async def test_tui_shows_text_elements_and_hides_closed_popups(hello_url):
             if app._notifications:
                 break
         await pilot.pause(0.5)  # let the toast render
+
+        def shown():
+            return {str(w.content) for w in app.query(Static)}
+        for label, want in (("Open dlg", True), ("Close dlg", False)):
+            btn = next(n.id for n in app.sniffer.tree.nodes.values() if n.props.get("label") == label)
+            await app.sniffer.fire(btn, "click")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if ("secret dialog" in shown()) == want:
+                    break
+            assert ("secret dialog" in shown()) == want, label
         assert [n.message for n in app._notifications] == ["people=[Person(name='Bob', age=21)]"]
