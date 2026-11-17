@@ -188,7 +188,7 @@ def _build(node: Node, children: list[Widget], app: "WireTuiApp") -> Widget | No
     if not children and not text and (tag == "a" or "innerHTML" in node.props or node.children_ids):
         return None  # an anchor target, markup with no text (an icon, an svg), or only such children
     if not children:
-        return _decorate(Static(Content(text)) if text else _Placeholder(f"[unsupported: {tag}]"), node)
+        return _decorate(Static(Content(text)) if text else _Placeholder(Content(f"[unsupported: {tag}]")), node)
     w = Vertical(Static(Content(text)), *children) if text else Vertical(*children)
     w.styles.height = "auto"
     return _decorate(w, node)
@@ -289,7 +289,7 @@ class WireTuiApp(App):
             message = str(data.get("message", ""))
             ntype = str(data.get("type", "info"))
             severity = {"negative": "error", "warning": "warning", "positive": "information"}.get(ntype, "information")
-            self.call_later(lambda: self.notify(message, severity=severity, title=ntype))
+            self.call_later(lambda: self.notify(message, severity=severity, title=ntype, markup=False))
 
     def _patch_or_rebuild(self, data: dict) -> None:
         """Apply a server ``update`` to existing widgets without remounting.

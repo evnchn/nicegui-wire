@@ -79,6 +79,7 @@ def hello_url(tmp_path_factory) -> str:
         "        ui.html('<i class=\"icon\"></i>')\n"
         "    ui.markdown('**md** text')\n"
         "    ui.html('<i class=\"icon\"></i>')\n"
+        "    ui.button('Notify', on_click=lambda: ui.notify(\"people=[Person(name='Bob', age=21)]\"))\n"
         "    ui.button(icon='menu')\n"
         "    with ui.button('Has menu'):\n"
         "        with ui.menu():\n"

@@ -96,7 +96,7 @@ async def test_tui_shows_text_elements_and_hides_closed_popups(hello_url):
     from textual.widgets import Button, Select, Static
     from nicegui_wire.textual_app import WireTuiApp, _Placeholder
     app = WireTuiApp(hello_url)
-    async with app.run_test() as pilot:
+    async with app.run_test(notifications=True) as pilot:
         for _ in range(40):
             await pilot.pause(0.05)
             texts = {str(w.content) for w in app.query(Static)} | {str(b.label) for b in app.query(Button)}
@@ -115,3 +115,12 @@ async def test_tui_shows_text_elements_and_hides_closed_popups(hello_url):
             if "changed html" in {str(w.content) for w in app.query(Static)}:
                 break
         assert "changed html" in {str(w.content) for w in app.query(Static)}
+
+        btn = next(n.id for n in app.sniffer.tree.nodes.values() if n.props.get("label") == "Notify")
+        await app.sniffer.fire(btn, "click")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app._notifications:
+                break
+        await pilot.pause(0.5)  # let the toast render
+        assert [n.message for n in app._notifications] == ["people=[Person(name='Bob', age=21)]"]
