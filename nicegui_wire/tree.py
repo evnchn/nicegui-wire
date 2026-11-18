@@ -23,11 +23,22 @@ and stitched via these references. The root of a page is always element 0.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 
 ROOT_ID = 0
+
+# Elements a browser draws nothing for.
+INVISIBLE_TAGS = {
+    "nicegui-timer",
+    "nicegui-keyboard",
+    "nicegui-page-title",
+    "nicegui-dark_mode",
+    "nicegui-intersection_observer",
+    "q-space",
+}
 
 
 def child_ids(d: dict[str, Any]) -> list[int]:
@@ -183,3 +194,20 @@ class ElementTree:
                     extras.append(str(interesting))
             out.append(f"{indent * depth}{label} {' '.join(extras)}")
         return "\n".join(out)
+
+
+def display_text(node: Node) -> str:
+    """The element's own visible text: rendered ``innerHTML`` (ui.html, ui.markdown), else text, else label."""
+    if "innerHTML" in node.props:
+        from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)  # ui.html often holds an <svg>
+            return BeautifulSoup(str(node.props["innerHTML"] or ""), "html.parser").get_text().strip()
+    return str(node.text or node.props.get("label") or "")
+
+
+def is_hidden(node: Node) -> bool:
+    """Popups a browser keeps closed: a tooltip until hover, a menu or dialog until opened."""
+    if node.tag == "q-tooltip":
+        return True
+    return node.tag in ("q-menu", "nicegui-dialog") and not node.props.get("model-value")

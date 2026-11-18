@@ -89,3 +89,49 @@ async def test_tui_value_update_on_slotted_input_does_not_rebuild(hello_url):
         app._rebuild = lambda: rebuilds.append(1)
         app._patch_or_rebuild({str(node.id): {**node.raw, "props": {**node.props, "value": "ab"}}})
         assert rebuilds == []
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_text_elements_and_hides_closed_popups(hello_url):
+    from textual.widgets import Button, Select, Static
+    from nicegui_wire.textual_app import WireTuiApp, _Placeholder
+    app = WireTuiApp(hello_url)
+    async with app.run_test(notifications=True) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.05)
+            texts = {str(w.content) for w in app.query(Static)} | {str(b.label) for b in app.query(Button)}
+            if "a link" in texts:
+                break
+        assert {"bold html", "a link", "md text", "menu"} <= texts  # ui.html, ui.link, ui.markdown, icon-only button
+        assert not {"secret dialog", "menu item", "tip text"} & texts  # closed dialog, closed menu, tooltip
+        assert not [str(p.content) for p in app.query(_Placeholder)]
+        assert "people=[Person(name='Bob', age=21)]" in texts  # literal text, not Textual markup
+        assert app.query_one(Select).value == 0  # ui.select (nicegui-select) with its current value
+
+        btn = next(n.id for n in app.sniffer.tree.nodes.values() if n.props.get("label") == "Set html")
+        await app.sniffer.fire(btn, "click")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if "changed html" in {str(w.content) for w in app.query(Static)}:
+                break
+        assert "changed html" in {str(w.content) for w in app.query(Static)}
+
+        btn = next(n.id for n in app.sniffer.tree.nodes.values() if n.props.get("label") == "Notify")
+        await app.sniffer.fire(btn, "click")
+        for _ in range(40):
+            await pilot.pause(0.05)
+            if app._notifications:
+                break
+        await pilot.pause(0.5)  # let the toast render
+
+        def shown():
+            return {str(w.content) for w in app.query(Static)}
+        for label, want in (("Open dlg", True), ("Close dlg", False)):
+            btn = next(n.id for n in app.sniffer.tree.nodes.values() if n.props.get("label") == label)
+            await app.sniffer.fire(btn, "click")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if ("secret dialog" in shown()) == want:
+                    break
+            assert ("secret dialog" in shown()) == want, label
+        assert [n.message for n in app._notifications] == ["people=[Person(name='Bob', age=21)]"]
